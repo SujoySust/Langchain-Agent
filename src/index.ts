@@ -11,6 +11,14 @@ import { ConfigManager } from "./config";
 import { LangChainCore } from "./core";
 import { ModelManager } from "./models";
 import { Logger } from "./utils";
+import { TavilySearchResults } from "@langchain/community/tools/tavily_search";
+import {
+  MemorySaver,
+  MessagesAnnotation,
+  StateGraph,
+} from "@langchain/langgraph";
+import { createReactAgent, ToolNode } from "@langchain/langgraph/prebuilt";
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
 
 // =============================================================================
 // MAIN APPLICATION CLASS
@@ -24,146 +32,69 @@ class LangChainStarter {
   private config: LangChainConfig;
   private logger: Logger;
   private modelManager: ModelManager;
-  private core: LangChainCore;
-  private initialized: boolean = false;
 
   constructor() {
     this.config = ConfigManager.getInstance().getConfig();
     this.logger = new Logger(this.config);
     this.modelManager = new ModelManager(this.config, this.logger);
-    this.core = new LangChainCore(this.modelManager, this.logger);
   }
 
-  async initialize(): Promise<void> {
-    if (this.initialized) {
-      this.logger.warn("LangChain starter already initialized");
-      return;
-    }
-
+  async testAgent(): Promise<void> {
     try {
-      this.logger.info("Initializing LangChain starter...");
+      // Define tools for the agent
+      const tools = [
+        new TavilySearchResults({
+          apiKey: process.env.TAVILY_API_KEY || "",
+          maxResults: 3,
+        }),
+      ];
 
-      // Initialize model manager
+      const toolNode = new ToolNode(tools);
       await this.modelManager.initialize();
+      const model = this.modelManager.getChatModel().bindTools(tools);
 
-      // Test connection
-      const connectionOk = await this.modelManager.testConnection();
-      if (!connectionOk) {
-        throw new Error("Failed to establish connection with models");
+      function shouldContinue({ messages }: typeof MessagesAnnotation.State) {
+        const lastMessage = messages[messages.length - 1] as AIMessage;
+        if (lastMessage.tool_calls?.length) {
+          return "tools";
+        }
+        return "__end__";
       }
 
-      this.initialized = true;
-      this.logger.info("LangChain starter initialized successfully");
+      async function callModel(state: typeof MessagesAnnotation.State) {
+        const response = await model.invoke(state.messages);
+        return {
+          messages: [response],
+        };
+      }
+
+      const workflow = new StateGraph(MessagesAnnotation)
+        .addNode("agent", callModel)
+        .addEdge("__start__", "agent")
+        .addNode("tools", toolNode)
+        .addEdge("tools", "agent")
+        .addConditionalEdges("agent", shouldContinue);
+
+      const app = workflow.compile();
+      const response = await app.invoke({
+        messages: [new HumanMessage("What is the weather in Khulna?")],
+      });
+      console.log(
+        "Response:",
+        response.messages[response.messages.length - 1].content
+      );
+
+      const nextResponse = await app.invoke({
+        messages: [...response.messages, new HumanMessage("What about Dhaka?")],
+      });
+      console.log(
+        "Response:",
+        nextResponse.messages[nextResponse.messages.length - 1].content
+      );
     } catch (error) {
       this.logger.error("Failed to initialize LangChain starter", error);
       throw error;
     }
-  }
-
-  getCore(): LangChainCore {
-    if (!this.initialized) {
-      throw new Error("LangChain starter must be initialized before use");
-    }
-    return this.core;
-  }
-
-  getModelManager(): ModelManager {
-    return this.modelManager;
-  }
-
-  getLogger(): Logger {
-    return this.logger;
-  }
-
-  getConfig(): LangChainConfig {
-    return this.config;
-  }
-
-  isInitialized(): boolean {
-    return this.initialized;
-  }
-
-  async reinitialize(): Promise<void> {
-    this.initialized = false;
-    await this.initialize();
-  }
-}
-
-// =============================================================================
-// EXAMPLE USAGE & DEMONSTRATIONS
-// =============================================================================
-
-async function runExamples() {
-  const app = new LangChainStarter();
-
-  try {
-    // Initialize the application
-    await app.initialize();
-    const core = app.getCore();
-    const logger = app.getLogger();
-
-    logger.info("=== Running LangChain Starter Examples ===");
-
-    // Example 1: Simple Chat
-    logger.info("Example 1: Simple Chat");
-    const chatResponse = await core.simpleChat(
-      "What is artificial intelligence?",
-      "You are a helpful AI assistant that provides concise explanations."
-    );
-    console.log("Chat Response:", chatResponse);
-
-    // Example 2: Prompt Chain
-    logger.info("Example 2: Prompt Chain");
-    const promptChain = await core.createPromptChain(
-      "Translate the following text to {language}: {text}"
-    );
-    const translation = await promptChain.call({
-      language: "Spanish",
-      text: "Hello, how are you?",
-    });
-    console.log("Translation:", translation);
-
-    // Example 3: RAG with sample documents
-    logger.info("Example 3: RAG (Retrieval-Augmented Generation)");
-    const sampleDocs = [
-      "LangChain is a framework for developing applications powered by language models.",
-      "It enables applications that are context-aware and can reason about their environment.",
-      "LangChain provides tools for prompt management, chains, agents, and memory.",
-      "Vector databases are used to store and retrieve semantic information efficiently.",
-    ];
-
-    const ragChain = await core.createRAGChain(sampleDocs);
-    const ragResponse = await ragChain.call({
-      query: "What tools does LangChain provide?",
-    });
-    console.log("RAG Response:", ragResponse);
-
-    // Example 4: Similarity Search
-    logger.info("Example 4: Similarity Search");
-    const similarDocs = await core.similaritySearch(
-      "vector database",
-      sampleDocs,
-      2
-    );
-    console.log("Similar Documents:", similarDocs);
-
-    // Example 5: Text Embeddings
-    logger.info("Example 5: Text Embeddings");
-    const embeddings = await core.getEmbeddings("Hello, world!");
-    console.log("Embeddings length:", embeddings.length);
-
-    // Example 6: Text Splitting
-    logger.info("Example 6: Text Splitting");
-    const longText =
-      "This is a very long text that needs to be split into smaller chunks for processing. ".repeat(
-        50
-      );
-    const chunks = await core.splitText(longText);
-    console.log("Number of chunks:", chunks.length);
-
-    logger.info("=== Examples completed successfully ===");
-  } catch (error) {
-    app.getLogger().error("Error running examples", error);
   }
 }
 
@@ -172,36 +103,11 @@ async function runExamples() {
 // =============================================================================
 
 async function main() {
-  console.log("🚀 LangChain Starter Template");
-  console.log("=============================");
-
-  // Check if we should run examples
-  if (process.env.RUN_EXAMPLES === "true") {
-    await runExamples();
-  } else {
-    console.log("To run examples, set RUN_EXAMPLES=true in your .env file");
-    console.log(
-      "For custom usage, import the classes and create your own implementation"
-    );
-
-    // Basic initialization example
-    try {
-      const app = new LangChainStarter();
-      await app.initialize();
-      console.log("✅ LangChain starter initialized and ready for use!");
-
-      // Show configuration (without sensitive data)
-      const config = app.getConfig();
-      console.log("📋 Current Configuration:");
-      console.log(`  - Model: ${config.openai.model}`);
-      console.log(`  - Temperature: ${config.openai.temperature}`);
-      console.log(`  - Max Tokens: ${config.openai.maxTokens}`);
-      console.log(`  - Embedding Model: ${config.embeddings.model}`);
-      console.log(`  - Log Level: ${config.logging.level}`);
-    } catch (error) {
-      console.error("❌ Failed to initialize LangChain starter:", error);
-      process.exit(1);
-    }
+  try {
+    const app = new LangChainStarter();
+    await app.testAgent();
+  } catch (error) {
+    process.exit(1);
   }
 }
 
