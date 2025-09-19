@@ -1,0 +1,26 @@
+{
+  "name": "rag-langchain",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "watch": "tsc --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^20.8.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.2.2"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@langchain/community": "^0.3.56",
+    "@langchain/core": "^0.3.77",
+    "@langchain/langgraph": "^0.4.9",
+    "@langchain/openai": "^0.6.13",
+    "cheerio": "^1.1.2",
+    "dotenv": "^17.2.2",
+    "langchain": "^0.3.34"
+  }
+}
